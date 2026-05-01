@@ -1,0 +1,727 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+// ========== WI-FI CONFIGURATION ==========
+const char* ssid = "minibot1";      // Your Wi-Fi Name
+const char* password = "donquijote12345"; // Your Password
+// =========================================
+
+// ========== MOTOR SPEED SETTINGS ==========
+#define MAX_SPEED 255        // Maximum motor speed (0-255)
+#define DEFAULT_SPEED 200    // Default running speed
+#define MIN_JOYSTICK_THRESHOLD 30  // Minimum joystick movement to activate
+
+// Motor Control Pins (XIAO ESP32C3)
+// Left Motor
+const int leftForwardPin = D0;   // GPIO 0 - IN1
+const int leftBackwardPin = D1;  // GPIO 1 - IN2
+// Right Motor  
+const int rightForwardPin = D2;  // GPIO 2 - IN3
+const int rightBackwardPin = D3; // GPIO 3 - IN4
+
+// ========== LEDC PWM CONFIGURATION ==========
+#define LEDC_TIMER_13_BIT  13    // 13-bit resolution (0-8191)
+#define LEDC_BASE_FREQ     5000  // 5 kHz PWM frequency
+
+// Channel assignments
+#define CH_LEFT_FORWARD    0
+#define CH_LEFT_BACKWARD   1
+#define CH_RIGHT_FORWARD   2
+#define CH_RIGHT_BACKWARD  3
+
+// Current speeds
+int currentLeftSpeed = 0;
+int currentRightSpeed = 0;
+String currentCommand = "stop";
+
+// Create web server on port 80
+WebServer server(80);
+
+// Touch-optimized HTML/CSS/JS with virtual joystick
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Touch Robot Controller - XIAO</title>
+    <style>
+        * {
+            user-select: none;
+            touch-action: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+            height: 100%;
+        }
+        
+        .controller {
+            max-width: 600px;
+            width: 100%;
+            height: 100vh;
+            margin: 0 auto;
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 15px;
+            flex-shrink: 0;
+        }
+        
+        h1 {
+            color: #fff;
+            font-size: 1.5em;
+            margin: 0 0 5px 0;
+            letter-spacing: 2px;
+        }
+        
+        .subtitle {
+            color: #88d4ff;
+            font-size: 0.7em;
+        }
+        
+        .speed-control {
+            background: rgba(0,0,0,0.4);
+            border-radius: 30px;
+            padding: 12px 20px;
+            margin-bottom: 15px;
+            flex-shrink: 0;
+        }
+        
+        .speed-label {
+            color: #fff;
+            text-align: center;
+            margin-bottom: 8px;
+            font-size: 0.8em;
+        }
+        
+        .speed-slider {
+            width: 100%;
+            height: 8px;
+            -webkit-appearance: none;
+            background: linear-gradient(90deg, #2ecc71, #e74c3c);
+            border-radius: 5px;
+            outline: none;
+        }
+        
+        .speed-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(255,255,255,0.5);
+            border: 2px solid #88d4ff;
+        }
+        
+        .speed-value {
+            text-align: center;
+            color: #88d4ff;
+            font-size: 1.1em;
+            font-weight: bold;
+            margin-top: 6px;
+        }
+        
+        /* Virtual Joystick Area */
+        .joystick-container {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 10px 0;
+            min-height: 250px;
+        }
+        
+        .joystick-base {
+            width: 220px;
+            height: 220px;
+            background: rgba(30,30,50,0.8);
+            border-radius: 50%;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            box-shadow: 0 0 0 3px rgba(255,255,255,0.2), 0 0 0 8px rgba(0,0,0,0.3);
+            touch-action: none;
+        }
+        
+        .joystick-thumb {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            border-radius: 50%;
+            position: absolute;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            transition: transform 0.05s linear;
+            border: 2px solid rgba(255,255,255,0.5);
+            touch-action: none;
+        }
+        
+        .joystick-thumb:active {
+            transform: scale(0.95);
+        }
+        
+        /* Direction Buttons - Touch Optimized */
+        .dpad-buttons {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            padding: 15px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 60px;
+            margin: 10px 0;
+            flex-shrink: 0;
+        }
+        
+        .touch-btn {
+            padding: 18px;
+            border-radius: 50px;
+            border: none;
+            font-size: 1.4em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.08s linear;
+            background: #2c3e66;
+            color: white;
+            touch-action: manipulation;
+            min-height: 60px;
+        }
+        
+        .touch-btn:active {
+            transform: scale(0.92);
+            filter: brightness(0.85);
+        }
+        
+        .btn-forward {
+            background: #e74c3c;
+            box-shadow: 0 4px 0 #c0392b;
+        }
+        
+        .btn-left {
+            background: #3498db;
+            box-shadow: 0 4px 0 #2980b9;
+        }
+        
+        .btn-stop {
+            background: #f39c12;
+            font-size: 1.1em;
+            box-shadow: 0 4px 0 #e67e22;
+        }
+        
+        .btn-right {
+            background: #3498db;
+            box-shadow: 0 4px 0 #2980b9;
+        }
+        
+        .btn-backward {
+            background: #2ecc71;
+            box-shadow: 0 4px 0 #27ae60;
+        }
+        
+        .status-panel {
+            background: rgba(0,0,0,0.5);
+            border-radius: 20px;
+            padding: 12px;
+            margin-top: 10px;
+            flex-shrink: 0;
+        }
+        
+        .status-label {
+            color: #aaa;
+            font-size: 0.7em;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+        
+        .command-status {
+            color: #88d4ff;
+            font-size: 1em;
+            text-align: center;
+            font-weight: bold;
+        }
+        
+        .direction-indicator {
+            text-align: center;
+            font-size: 2em;
+            margin-top: 5px;
+        }
+        
+        .connection-badge {
+            text-align: center;
+            color: #2ecc71;
+            font-size: 0.6em;
+            margin-top: 8px;
+            flex-shrink: 0;
+        }
+        
+        @media (max-width: 480px) {
+            .joystick-base {
+                width: 180px;
+                height: 180px;
+            }
+            .joystick-thumb {
+                width: 65px;
+                height: 65px;
+            }
+            .touch-btn {
+                padding: 14px;
+                font-size: 1.2em;
+                min-height: 50px;
+            }
+            .dpad-buttons {
+                gap: 10px;
+            }
+        }
+        
+        @media (max-width: 380px) {
+            .joystick-base {
+                width: 150px;
+                height: 150px;
+            }
+            .joystick-thumb {
+                width: 55px;
+                height: 55px;
+            }
+            .touch-btn {
+                padding: 12px;
+                font-size: 1em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="controller">
+        <div class="header">
+            <h1>🎮 TOUCH ROBOT CONTROLLER</h1>
+            <div class="subtitle">XIAO ESP32-C3 | Virtual Joystick</div>
+        </div>
+        
+        <div class="speed-control">
+            <div class="speed-label">⚡ MOTOR SPEED</div>
+            <input type="range" id="speedSlider" class="speed-slider" min="0" max="255" value="200">
+            <div class="speed-value" id="speedValue">200 (78%)</div>
+        </div>
+        
+        <!-- Virtual Joystick -->
+        <div class="joystick-container">
+            <div id="joystickBase" class="joystick-base">
+                <div id="joystickThumb" class="joystick-thumb"></div>
+            </div>
+        </div>
+        
+        <!-- Touch Buttons (Fallback/Precise Control) -->
+        <div class="dpad-buttons">
+            <div></div>
+            <button id="btnForward" class="touch-btn btn-forward" ontouchstart="sendCommand('forward')" ontouchend="sendCommand('stop')">▲ FORWARD</button>
+            <div></div>
+            
+            <button id="btnLeft" class="touch-btn btn-left" ontouchstart="sendCommand('left')" ontouchend="sendCommand('stop')">◀ LEFT</button>
+            <button id="btnStop" class="touch-btn btn-stop" ontouchstart="sendCommand('stop')">⏹️ STOP</button>
+            <button id="btnRight" class="touch-btn btn-right" ontouchstart="sendCommand('right')" ontouchend="sendCommand('stop')">RIGHT ▶</button>
+            
+            <div></div>
+            <button id="btnBackward" class="touch-btn btn-backward" ontouchstart="sendCommand('backward')" ontouchend="sendCommand('stop')">▼ BACKWARD</button>
+            <div></div>
+        </div>
+        
+        <div class="status-panel">
+            <div class="status-label">CURRENT STATUS</div>
+            <div class="command-status" id="commandStatus">⏹️ STOPPED</div>
+            <div class="direction-indicator" id="directionIndicator">⬤</div>
+        </div>
+        
+        <div class="connection-badge">
+            🟢 TOUCH ACTIVE | DRAG JOYSTICK
+        </div>
+    </div>
+    
+    <script>
+        let lastCommand = 'stop';
+        let currentSpeed = 200;
+        let joystickActive = false;
+        let joystickCenter = { x: 0, y: 0 };
+        let joystickMaxRadius = 70;
+        
+        // DOM elements
+        const joystickBase = document.getElementById('joystickBase');
+        const joystickThumb = document.getElementById('joystickThumb');
+        const speedSlider = document.getElementById('speedSlider');
+        const speedValue = document.getElementById('speedValue');
+        const commandStatus = document.getElementById('commandStatus');
+        const directionIndicator = document.getElementById('directionIndicator');
+        
+        // Speed slider handler
+        speedSlider.addEventListener('input', function() {
+            currentSpeed = parseInt(this.value);
+            let percent = Math.round((currentSpeed / 255) * 100);
+            speedValue.innerHTML = `${currentSpeed} (${percent}%)`;
+            
+            fetch('/speed/' + currentSpeed)
+                .catch(err => console.error('Speed update error:', err));
+                
+            if (lastCommand !== 'stop') {
+                updateMotorFromJoystick();
+            }
+        });
+        
+        // Joystick touch handlers
+        function getJoystickCenter() {
+            const rect = joystickBase.getBoundingClientRect();
+            return {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2
+            };
+        }
+        
+        function handleJoystickStart(e) {
+            e.preventDefault();
+            joystickActive = true;
+            joystickCenter = getJoystickCenter();
+            
+            // Add move and end listeners
+            document.addEventListener('touchmove', handleJoystickMove);
+            document.addEventListener('touchend', handleJoystickEnd);
+            document.addEventListener('mousemove', handleJoystickMove);
+            document.addEventListener('mouseup', handleJoystickEnd);
+        }
+        
+        function handleJoystickMove(e) {
+            if (!joystickActive) return;
+            e.preventDefault();
+            
+            let clientX, clientY;
+            if (e.touches) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            let dx = clientX - joystickCenter.x;
+            let dy = clientY - joystickCenter.y;
+            let distance = Math.sqrt(dx * dx + dy * dy);
+            let angle = Math.atan2(dy, dx);
+            
+            // Limit to max radius
+            if (distance > joystickMaxRadius) {
+                distance = joystickMaxRadius;
+                dx = Math.cos(angle) * distance;
+                dy = Math.sin(angle) * distance;
+            }
+            
+            // Move thumb
+            joystickThumb.style.transform = `translate(${dx}px, ${dy}px)`;
+            
+            // Calculate direction based on angle
+            let command = 'stop';
+            let directionIcon = '⬤';
+            
+            if (distance > MIN_JOYSTICK_THRESHOLD) {
+                // Determine primary direction (45-degree sectors)
+                if (angle >= -Math.PI/4 && angle < Math.PI/4) {
+                    command = 'right';
+                    directionIcon = '➡️';
+                } else if (angle >= Math.PI/4 && angle < 3*Math.PI/4) {
+                    command = 'backward';
+                    directionIcon = '⬇️';
+                } else if (angle >= -3*Math.PI/4 && angle < -Math.PI/4) {
+                    command = 'forward';
+                    directionIcon = '⬆️';
+                } else {
+                    command = 'left';
+                    directionIcon = '⬅️';
+                }
+            } else {
+                command = 'stop';
+                directionIcon = '⬤';
+            }
+            
+            // Update direction indicator
+            directionIndicator.innerHTML = directionIcon;
+            
+            // Send command
+            if (command !== lastCommand) {
+                sendCommand(command);
+            }
+        }
+        
+        function handleJoystickEnd(e) {
+            joystickActive = false;
+            joystickThumb.style.transform = 'translate(0px, 0px)';
+            directionIndicator.innerHTML = '⬤';
+            sendCommand('stop');
+            
+            // Remove listeners
+            document.removeEventListener('touchmove', handleJoystickMove);
+            document.removeEventListener('touchend', handleJoystickEnd);
+            document.removeEventListener('mousemove', handleJoystickMove);
+            document.removeEventListener('mouseup', handleJoystickEnd);
+        }
+        
+        function updateMotorFromJoystick() {
+            // This function is called when speed changes while joystick is active
+            if (lastCommand !== 'stop') {
+                sendCommand(lastCommand);
+            }
+        }
+        
+        function sendCommand(cmd) {
+            if (cmd === lastCommand && cmd !== 'stop') return;
+            
+            lastCommand = cmd;
+            
+            // Update display
+            const commandNames = {
+                'forward': '⬆️ FORWARD',
+                'backward': '⬇️ BACKWARD',
+                'left': '⬅️ LEFT TURN',
+                'right': '➡️ RIGHT TURN',
+                'stop': '⏹️ STOPPED'
+            };
+            
+            commandStatus.innerHTML = commandNames[cmd] || cmd.toUpperCase();
+            
+            // Provide haptic feedback on touch devices
+            if (window.navigator && window.navigator.vibrate && cmd !== 'stop') {
+                window.navigator.vibrate(30);
+            }
+            
+            // Send command with current speed
+            fetch(`/cmd/${cmd}/${currentSpeed}`)
+                .catch(err => console.error('Error:', err));
+        }
+        
+        // Attach joystick event listeners
+        joystickBase.addEventListener('touchstart', handleJoystickStart);
+        joystickBase.addEventListener('mousedown', handleJoystickStart);
+        
+        // Prevent context menu on long press
+        joystickBase.addEventListener('contextmenu', (e) => e.preventDefault());
+        
+        // Button press visual feedback for touch buttons
+        const buttons = ['btnForward', 'btnBackward', 'btnLeft', 'btnRight', 'btnStop'];
+        buttons.forEach(btnId => {
+            const btn = document.getElementById(btnId);
+            if (btn) {
+                btn.addEventListener('touchstart', (e) => {
+                    btn.style.transform = 'scale(0.92)';
+                });
+                btn.addEventListener('touchend', (e) => {
+                    btn.style.transform = 'scale(1)';
+                });
+                btn.addEventListener('mousedown', (e) => {
+                    btn.style.transform = 'scale(0.92)';
+                });
+                btn.addEventListener('mouseup', (e) => {
+                    btn.style.transform = 'scale(1)';
+                });
+            }
+        });
+        
+        // Initial joystick max radius
+        function updateJoystickRadius() {
+            const rect = joystickBase.getBoundingClientRect();
+            joystickMaxRadius = rect.width / 2.5;
+        }
+        updateJoystickRadius();
+        window.addEventListener('resize', updateJoystickRadius);
+    </script>
+</body>
+</html>
+)rawliteral";
+
+// ========== LEDC PWM INITIALIZATION ==========
+void initLEDC() {
+    ledcSetup(CH_LEFT_FORWARD, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
+    ledcSetup(CH_LEFT_BACKWARD, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
+    ledcSetup(CH_RIGHT_FORWARD, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
+    ledcSetup(CH_RIGHT_BACKWARD, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
+    
+    ledcAttachPin(leftForwardPin, CH_LEFT_FORWARD);
+    ledcAttachPin(leftBackwardPin, CH_LEFT_BACKWARD);
+    ledcAttachPin(rightForwardPin, CH_RIGHT_FORWARD);
+    ledcAttachPin(rightBackwardPin, CH_RIGHT_BACKWARD);
+    
+    ledcWrite(CH_LEFT_FORWARD, 0);
+    ledcWrite(CH_LEFT_BACKWARD, 0);
+    ledcWrite(CH_RIGHT_FORWARD, 0);
+    ledcWrite(CH_RIGHT_BACKWARD, 0);
+}
+
+// ========== MOTOR CONTROL FUNCTIONS WITH PWM ==========
+void stopMotors() {
+    ledcWrite(CH_LEFT_FORWARD, 0);
+    ledcWrite(CH_LEFT_BACKWARD, 0);
+    ledcWrite(CH_RIGHT_FORWARD, 0);
+    ledcWrite(CH_RIGHT_BACKWARD, 0);
+    currentCommand = "stop";
+    Serial.println("Command: STOP");
+}
+
+void moveForward(int speed) {
+    speed = constrain(speed, 0, 255);
+    ledcWrite(CH_LEFT_FORWARD, speed);
+    ledcWrite(CH_LEFT_BACKWARD, 0);
+    ledcWrite(CH_RIGHT_FORWARD, speed);
+    ledcWrite(CH_RIGHT_BACKWARD, 0);
+    currentCommand = "forward";
+    Serial.printf("Command: FORWARD at speed %d\n", speed);
+}
+
+void moveBackward(int speed) {
+    speed = constrain(speed, 0, 255);
+    ledcWrite(CH_LEFT_FORWARD, 0);
+    ledcWrite(CH_LEFT_BACKWARD, speed);
+    ledcWrite(CH_RIGHT_FORWARD, 0);
+    ledcWrite(CH_RIGHT_BACKWARD, speed);
+    currentCommand = "backward";
+    Serial.printf("Command: BACKWARD at speed %d\n", speed);
+}
+
+void moveLeft(int speed) {
+    speed = constrain(speed, 0, 255);
+    ledcWrite(CH_LEFT_FORWARD, 0);
+    ledcWrite(CH_LEFT_BACKWARD, speed);
+    ledcWrite(CH_RIGHT_FORWARD, speed);
+    ledcWrite(CH_RIGHT_BACKWARD, 0);
+    currentCommand = "left";
+    Serial.printf("Command: LEFT at speed %d\n", speed);
+}
+
+void moveRight(int speed) {
+    speed = constrain(speed, 0, 255);
+    ledcWrite(CH_LEFT_FORWARD, speed);
+    ledcWrite(CH_LEFT_BACKWARD, 0);
+    ledcWrite(CH_RIGHT_FORWARD, 0);
+    ledcWrite(CH_RIGHT_BACKWARD, speed);
+    currentCommand = "right";
+    Serial.printf("Command: RIGHT at speed %d\n", speed);
+}
+
+// ========== WEB SERVER HANDLERS ==========
+void handleRoot() {
+    server.send(200, "text/html", index_html);
+}
+
+void handleSpeed() {
+    String speedStr = server.pathArg(0);
+    int speed = speedStr.toInt();
+    speed = constrain(speed, 0, 255);
+    
+    if (currentCommand != "stop") {
+        if (currentCommand == "forward") moveForward(speed);
+        else if (currentCommand == "backward") moveBackward(speed);
+        else if (currentCommand == "left") moveLeft(speed);
+        else if (currentCommand == "right") moveRight(speed);
+    }
+    
+    server.send(200, "text/plain", String(speed));
+}
+
+void handleCommand() {
+    String command = server.pathArg(0);
+    String speedStr = server.pathArg(1);
+    int speed = speedStr.length() > 0 ? speedStr.toInt() : DEFAULT_SPEED;
+    speed = constrain(speed, 0, MAX_SPEED);
+    
+    if (command == "forward") {
+        moveForward(speed);
+        server.send(200, "text/plain", "FORWARD");
+    } 
+    else if (command == "backward") {
+        moveBackward(speed);
+        server.send(200, "text/plain", "BACKWARD");
+    }
+    else if (command == "left") {
+        moveLeft(speed);
+        server.send(200, "text/plain", "LEFT");
+    }
+    else if (command == "right") {
+        moveRight(speed);
+        server.send(200, "text/plain", "RIGHT");
+    }
+    else if (command == "stop") {
+        stopMotors();
+        server.send(200, "text/plain", "STOP");
+    }
+    else {
+        server.send(400, "text/plain", "Unknown command");
+    }
+}
+
+// ========== SETUP ==========
+void setup() {
+    Serial.begin(115200);
+    delay(100);
+    
+    initLEDC();
+    Serial.println("✅ LEDC PWM initialized for touch control");
+    
+    Serial.println();
+    Serial.println("=== XIAO TOUCH ROBOT CONTROLLER ===");
+    Serial.print("Connecting to Wi-Fi: ");
+    Serial.println(ssid);
+    
+    WiFi.begin(ssid, password);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println();
+        Serial.println("✅ WiFi Connected!");
+        Serial.print("📡 IP Address: ");
+        Serial.println(WiFi.localIP());
+        Serial.println("🌐 Open this IP on your TOUCH device");
+        Serial.println("🎮 Drag the joystick or tap buttons to control");
+    } else {
+        Serial.println();
+        Serial.println("❌ WiFi connection failed!");
+    }
+    
+    server.on("/", handleRoot);
+    server.onNotFound([]() {
+        String uri = server.uri();
+        if (uri.startsWith("/speed/")) {
+            handleSpeed();
+        } else if (uri.startsWith("/cmd/")) {
+            handleCommand();
+        } else {
+            server.send(404, "text/plain", "Not Found");
+        }
+    });
+    
+    server.begin();
+    Serial.println("✅ Web server ready for touch input");
+    Serial.println("==================================");
+}
+
+void loop() {
+    server.handleClient();
+    delay(10);
+}
