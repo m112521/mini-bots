@@ -83,11 +83,12 @@ const char index_html[] PROGMEM = R"rawliteral(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XIAO Robot</title>
+    <title>SUMOBOT</title>
     <style>
         * {
             user-select: none;
             touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
         }
         
         body {
@@ -208,10 +209,11 @@ const char index_html[] PROGMEM = R"rawliteral(
             border-radius: 20px;
             padding: 15px;
             margin-top: 20px;
+            color:#fff;
         }
         
         .status-label {
-            color: #aaa;
+            color: #fff;
             font-size: 0.8em;
             text-align: center;
             margin-bottom: 5px;
@@ -227,7 +229,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         
         .ip-info {
             text-align: center;
-            color: #666;
+            color: #fff;
             font-size: 0.7em;
             margin-top: 15px;
         }
@@ -257,20 +259,31 @@ const char index_html[] PROGMEM = R"rawliteral(
         
         .connection-badge {
             text-align: center;
-            color: #2ecc71;
+            color: #fff;
             font-size: 0.7em;
             margin-top: 10px;
+        }
+        .speed-slider {
+            width:100%;
+        }
+        .slider-text {
+            color: #fff;
+            margin-bottom:1rem;
         }
     </style>
 </head>
 <body>
 <div class="controller">
 
-    <h1>🤖 XIAO Robot</h1>
+    <h1>🤖 SUMO BOT</h1>
     <div class="subtitle">XIAO ESP32-C3 | Remote Control</div>
 
     <input type="range" id="speed" class="speed-slider" min="0" max="255" value="200">
-    <div>Speed: <span id="speedVal">200</span></div>
+    <div class="slider-text">Motor 1 speed: <span id="speedVal">200</span></div>
+
+    <input type="range" id="speed2" class="speed-slider" min="0" max="255" value="200">
+    <div class="slider-text">Motor 2 speed: <span id="speedVal2">200</span></div>
+
     <div class="joystick-area">
       <div class="dpad">
         <div></div>
@@ -288,13 +301,19 @@ const char index_html[] PROGMEM = R"rawliteral(
   </div>
     <script>
         let spd = 200;
+        let spd2 = 200;
         document.getElementById('speed').oninput = function() {
             spd = this.value;
             document.getElementById('speedVal').innerHTML = spd;
             fetch('/speed/' + spd);
         };
+        document.getElementById('speed2').oninput = function() {
+            spd2 = this.value;
+            document.getElementById('speedVal2').innerHTML = spd2;
+            fetch('/speed2/' + spd2);
+        };
         function send(cmd) {
-            fetch('/cmd?dir=' + cmd + '&speed=' + spd); // Creates URLs like /cmd?dir=forward&speed=200
+            fetch('/cmd?dir=' + cmd + '&speed=' + spd + '&speed2=' + spd2); // Creates URLs like /cmd?dir=forward&speed=200
             document.getElementById('status').innerHTML = cmd.toUpperCase();
             navigator.vibrate?.(30);
         }; 
@@ -321,14 +340,14 @@ void stopMotors() {
     ledcWrite(CH_RIGHT_FORWARD, 0); ledcWrite(CH_RIGHT_BACKWARD, 0);
 }
 
-void moveForward(int s) { s = constrain(s,0,255);
+void moveForward(int s, int s2) { s = constrain(s,0,255);
     ledcWrite(CH_LEFT_FORWARD, s); ledcWrite(CH_LEFT_BACKWARD, 0);
-    ledcWrite(CH_RIGHT_FORWARD, s); ledcWrite(CH_RIGHT_BACKWARD, 0);
+    ledcWrite(CH_RIGHT_FORWARD, s2); ledcWrite(CH_RIGHT_BACKWARD, 0);
     Serial.println("FOOOOOOOOOOO");
 }
-void moveBackward(int s) { s = constrain(s,0,255);
+void moveBackward(int s, int s2) { s = constrain(s,0,255);
     ledcWrite(CH_LEFT_FORWARD, 0); ledcWrite(CH_LEFT_BACKWARD, s);
-    ledcWrite(CH_RIGHT_FORWARD, 0); ledcWrite(CH_RIGHT_BACKWARD, s);
+    ledcWrite(CH_RIGHT_FORWARD, 0); ledcWrite(CH_RIGHT_BACKWARD, s2);
 }
 void moveLeft(int s) { s = constrain(s,0,255);
     ledcWrite(CH_LEFT_FORWARD, 0); ledcWrite(CH_LEFT_BACKWARD, s);
@@ -348,12 +367,13 @@ void handleCommand() {
         
         String cmd = server.arg("dir"); // Gets "forward", "left", etc.
         int spd = server.arg("speed").toInt(); // Gets the speed number
+        int spd2 = server.arg("speed2").toInt(); // Gets the speed2 number
 
         // Debug print
         Serial.printf("Received: %s, Speed: %d\n", cmd.c_str(), spd);
 
-        if (cmd == "forward") moveForward(spd);
-        else if (cmd == "backward") moveBackward(spd);
+        if (cmd == "forward") moveForward(spd, spd2);
+        else if (cmd == "backward") moveBackward(spd, spd2);
         else if (cmd == "left") moveLeft(spd);
         else if (cmd == "right") moveRight(spd);
         else if (cmd == "stop") stopMotors();
