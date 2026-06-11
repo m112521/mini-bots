@@ -343,7 +343,6 @@ void stopMotors() {
 void moveForward(int s, int s2) { s = constrain(s,0,255);
     ledcWrite(CH_LEFT_FORWARD, s); ledcWrite(CH_LEFT_BACKWARD, 0);
     ledcWrite(CH_RIGHT_FORWARD, s2); ledcWrite(CH_RIGHT_BACKWARD, 0);
-    Serial.println("FOOOOOOOOOOO");
 }
 void moveBackward(int s, int s2) { s = constrain(s,0,255);
     ledcWrite(CH_LEFT_FORWARD, 0); ledcWrite(CH_LEFT_BACKWARD, s);
